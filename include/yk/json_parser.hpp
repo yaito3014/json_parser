@@ -190,20 +190,6 @@ constexpr bool JObject::operator==(const JObject& other) const {
   return entries_ == other.entries_;
 }
 
-constexpr std::string_view trim_start(std::string_view sv) noexcept {
-  std::size_t pos = sv.find_first_not_of(" \n\t");
-  if (pos == sv.npos) return sv.substr(sv.size(), 0);
-  return sv.substr(pos);
-}
-
-constexpr std::string_view trim_end(std::string_view sv) noexcept {
-  std::size_t pos = sv.find_last_not_of(" \n\t");
-  if (pos == sv.npos) return sv.substr(0, 0);
-  return sv.substr(0, pos + 1);
-}
-
-constexpr std::string_view trim(std::string_view sv) noexcept { return trim_start(trim_end(sv)); }
-
 constexpr auto anyChar(std::string_view sv) noexcept {
   return [=](std::string_view sv) -> std::expected<parse_result<char>, std::string_view> {
     if (sv.empty()) return std::unexpected{"empty input"};
@@ -260,7 +246,7 @@ constexpr auto many(P parser) {
 }
 
 template <TryParser P, TryParser Sep>
-constexpr auto sepBy(P parser, Sep separator) {
+constexpr auto sepBy1(P parser, Sep separator) {
   return [=](std::string_view sv) -> std::expected<parse_result<std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type>>, std::string_view> {
     std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type> res;
     std::string_view remaining = sv;
@@ -284,10 +270,42 @@ constexpr auto sepBy(P parser, Sep separator) {
   };
 }
 
-constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
+template <TryParser P, class T>
+constexpr auto whitespace_or(P parser, const T& default_value) noexcept {
+  return [=](std::string_view sv) -> std::invoke_result_t<P, std::string_view> {
+    if (auto m = parser(sv)) {
+      return m;
+    } else {
+      if (auto mws = many(anyOf(" \t\r\n"))(sv)) return parse_result{default_value, mws->remainder};
+      return std::unexpected{m.error()};
+    }
+  };
+}
+
+constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_parse(std::string_view sv) noexcept {
+  const auto item_parser = [](std::string_view s) -> std::expected<parse_result<std::tuple<JString, JValue>>, std::string_view> {
+    const auto ws = many(anyOf(" \t\r\n"));
+    if (auto key = between(ws, ws, JString::try_parse)(s)) {
+      if (auto delim = anyOf(":")(key->remainder)) {
+        if (auto value = JValue::try_parse(delim->remainder)) {
+          return parse_result{std::tuple{key->value, value->value}, value->remainder};
+        }
+      }
+    }
+    return std::unexpected{"invalid item"};
+  };
+
+  if (auto m = between(anyOf("{"), anyOf("}"), whitespace_or(sepBy1(item_parser, anyOf(",")), std::vector<std::tuple<JString, JValue>>{}))(sv)) {
+    JObject res;
+    res.entries_ = m->value;
+    return parse_result{res, m->remainder};
+  } else {
+    return std::unexpected("invalid object");
+  }
+}
 
 constexpr std::expected<parse_result<JArray>, std::string_view> JArray::try_parse(std::string_view sv) noexcept {
-  if (auto m = between(anyOf("["), anyOf("]"), sepBy(JValue::try_parse, anyOf(",")))(sv)) {
+  if (auto m = between(anyOf("["), anyOf("]"), whitespace_or(sepBy1(JValue::try_parse, anyOf(",")), std::vector<JValue>{}))(sv)) {
     JArray res;
     res.values_ = m->value;
     return parse_result{res, m->remainder};
@@ -300,7 +318,7 @@ constexpr std::expected<parse_result<JNumber>, std::string_view> JNumber::try_pa
   double value;
   auto [out, errc] = std::from_chars(sv.begin(), sv.end(), value);
   if (errc != std::errc{}) return std::unexpected("invalid number");
-  return parse_result<JNumber>{JNumber{value}, std::string(out, sv.end())};
+  return parse_result<JNumber>{JNumber{value}, std::string_view(out, sv.end())};
 }
 
 constexpr std::expected<parse_result<JString>, std::string_view> JString::try_parse(std::string_view sv) noexcept {
@@ -324,12 +342,14 @@ constexpr std::expected<parse_result<JNull>, std::string_view> JNull::try_parse(
 }
 
 constexpr std::expected<parse_result<JValue>, std::string_view> JValue::try_parse(std::string_view sv) noexcept {
-  if (auto m = JObject::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = JNumber::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = JArray::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = JString::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = JBool::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = JNull::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  const auto ws = many(anyOf(" \t\r\n"));
+
+  if (auto m = between(ws, ws, JObject::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(ws, ws, JNumber::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(ws, ws, JArray::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(ws, ws, JString::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(ws, ws, JBool::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(ws, ws, JNull::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
   return std::unexpected{"invalid value"};
 }
 

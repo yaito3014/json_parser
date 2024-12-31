@@ -5,24 +5,6 @@
 
 BOOST_AUTO_TEST_SUITE(yk_json_parser)
 
-BOOST_AUTO_TEST_CASE(Trim) {
-  BOOST_TEST(yk::trim_start("  ") == "");
-  BOOST_TEST(yk::trim_start("foo") == "foo");
-  BOOST_TEST(yk::trim_start("  foo") == "foo");
-  BOOST_TEST(yk::trim_start("  foo  ") == "foo  ");
-
-  BOOST_TEST(yk::trim_start("  ") == "");
-  BOOST_TEST(yk::trim_end("foo") == "foo");
-  BOOST_TEST(yk::trim_end("foo  ") == "foo");
-  BOOST_TEST(yk::trim_end("  foo  ") == "  foo");
-
-  BOOST_TEST(yk::trim_start("  ") == "");
-  BOOST_TEST(yk::trim("foo") == "foo");
-  BOOST_TEST(yk::trim("  foo") == "foo");
-  BOOST_TEST(yk::trim("foo  ") == "foo");
-  BOOST_TEST(yk::trim("  foo  ") == "foo");
-}
-
 BOOST_AUTO_TEST_CASE(AnyOf) {
   BOOST_TEST(bool(yk::anyOf("abc")("a")));
   BOOST_TEST(bool(yk::anyOf("abc")("b")));
@@ -49,13 +31,32 @@ BOOST_AUTO_TEST_CASE(Between) {
   BOOST_TEST(!bool(parser("a")));
 }
 
-BOOST_AUTO_TEST_CASE(SepBy) {
-  const auto parser = yk::sepBy(yk::anyOf("ab"), yk::anyOf(","));
+BOOST_AUTO_TEST_CASE(SepBy1) {
+  const auto parser = yk::sepBy1(yk::anyOf("ab"), yk::anyOf(","));
 
   BOOST_TEST((parser("a").value() == yk::parse_result{std::vector{'a'}}, ""));
   BOOST_TEST((parser("a,b").value() == yk::parse_result{std::vector{'a', 'b'}}, ""));
 
-  BOOST_TEST(!bool(parser(",")));
+  BOOST_TEST(!bool(parser("")));
+  BOOST_TEST(!bool(parser("c")));
+}
+
+BOOST_AUTO_TEST_CASE(WhitespaceOr) {
+  const auto parser = yk::whitespace_or(yk::anyOf("ab"), 'x');
+
+  BOOST_TEST((parser("a").value() == yk::parse_result{'a', ""}));
+  BOOST_TEST((parser("b").value() == yk::parse_result{'b', ""}));
+  BOOST_TEST((parser(" ").value() == yk::parse_result{'x', ""}));
+  BOOST_TEST((parser("  ").value() == yk::parse_result{'x', ""}));
+}
+
+BOOST_AUTO_TEST_CASE(Combinator) {
+  const auto ab = yk::anyOf("ab");
+  const auto parser = yk::between(yk::anyOf("["), yk::anyOf("]"), yk::whitespace_or(yk::sepBy1(ab, yk::anyOf(",")), std::vector<char>{}));
+  BOOST_TEST((parser("[]").value() == yk::parse_result{std::vector<char>{}, ""}));
+  BOOST_TEST((parser("[ ]").value() == yk::parse_result{std::vector<char>{}, ""}));
+  BOOST_TEST((parser("[a]").value() == yk::parse_result{std::vector<char>{'a'}, ""}));
+  BOOST_TEST((parser("[a,b]").value() == yk::parse_result{std::vector<char>{'a', 'b'}, ""}));
 }
 
 BOOST_AUTO_TEST_CASE(Number) {
@@ -67,6 +68,8 @@ BOOST_AUTO_TEST_CASE(Number) {
 
   BOOST_REQUIRE_THROW(yk::JNumber::parse("foo3.14"), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JNumber::parse("foo3.14bar"), yk::parse_error);
+
+  BOOST_TEST((yk::JNumber::try_parse("3.14foo").value() == yk::parse_result{yk::JNumber{3.14}, "foo"}));
 }
 
 BOOST_AUTO_TEST_CASE(String) {
@@ -91,7 +94,7 @@ BOOST_AUTO_TEST_CASE(Null) {
   BOOST_REQUIRE_THROW(yk::JNull::parse("nil"), yk::parse_error);
 }
 
-BOOST_AUTO_TEST_CASE(Array) {  //
+BOOST_AUTO_TEST_CASE(Array) {
   BOOST_TEST((yk::JArray::parse("[]") == yk::JArray{}));
   BOOST_TEST((yk::JArray::parse("[  ]") == yk::JArray{}));
   BOOST_TEST((yk::JArray::parse("[42]") == yk::JArray{yk::JNumber{42}}));
@@ -104,6 +107,8 @@ BOOST_AUTO_TEST_CASE(Array) {  //
 
   BOOST_TEST((yk::JArray::parse("[\",\",\",\"]") == yk::JArray{yk::JString{","}, yk::JString{","}}));
 
+  BOOST_REQUIRE_THROW(yk::JArray::parse("["), yk::parse_error);
+  BOOST_REQUIRE_THROW(yk::JArray::parse("]"), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JArray::parse("[,]"), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JArray::parse("[42,]"), yk::parse_error);
 }
