@@ -56,10 +56,14 @@ class JString;
 class JBool;
 class JNull;
 
+struct ParseOptions {
+  bool allow_trailing_comma = false;
+};
+
 template <class Derived>
 struct ParserMixin {
-  static constexpr Derived parse(std::string_view sv) {
-    if (auto expect = Derived::try_parse(sv)) {
+  static constexpr Derived parse(std::string_view sv, ParseOptions opts = {}) {
+    if (auto expect = Derived::try_parse(sv, opts)) {
       if (expect->remainder.empty()) {
         return expect->value;
       } else {
@@ -78,9 +82,12 @@ public:
   constexpr JObject() = default;
   constexpr JObject(std::initializer_list<std::tuple<JString, JValue>> init_list) : entries_(init_list) {}
 
-  static constexpr std::expected<parse_result<JObject>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JObject>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
 
   constexpr bool operator==(const JObject&) const;
+
+private:
+  constexpr JObject(const std::vector<std::tuple<JString, JValue>>& entries);
 
 private:
   std::vector<std::tuple<JString, JValue>> entries_;
@@ -92,7 +99,7 @@ public:
 
   constexpr bool operator==(const JNumber&) const noexcept = default;
 
-  static constexpr std::expected<parse_result<JNumber>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JNumber>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
 
 private:
   double value_;
@@ -106,7 +113,10 @@ public:
 
   constexpr bool operator==(const JArray&) const noexcept;
 
-  static constexpr std::expected<parse_result<JArray>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JArray>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
+
+private:
+  constexpr JArray(const std::vector<JValue>& values);
 
 private:
   std::vector<JValue> values_;
@@ -118,7 +128,7 @@ public:
 
   constexpr bool operator==(const JString&) const noexcept = default;
 
-  static constexpr std::expected<parse_result<JString>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JString>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
 
 private:
   std::string str_;
@@ -130,7 +140,7 @@ public:
 
   constexpr bool operator==(const JBool&) const noexcept = default;
 
-  static constexpr std::expected<parse_result<JBool>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JBool>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
 
 private:
   bool value_;
@@ -140,7 +150,7 @@ class JNull : public ParserMixin<JNull> {
 public:
   constexpr bool operator==(const JNull&) const noexcept = default;
 
-  static constexpr std::expected<parse_result<JNull>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JNull>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
 };
 
 class JValue : public ParserMixin<JValue> {
@@ -178,13 +188,17 @@ public:
 
   constexpr bool operator==(const JValue&) const = default;
 
-  static constexpr std::expected<parse_result<JValue>, std::string_view> try_parse(std::string_view) noexcept;
+  static constexpr std::expected<parse_result<JValue>, std::string_view> try_parse(std::string_view, ParseOptions opts = {}) noexcept;
 
 private:
   std::variant<JNull, JObject, JNumber, JArray, JString, JBool> variant_;
 };
 
+constexpr JArray::JArray(const std::vector<JValue>& values) : values_(values) {}
+
 constexpr bool JArray::operator==(const JArray&) const noexcept = default;
+
+constexpr JObject::JObject(const std::vector<std::tuple<JString, JValue>>& entries) : entries_(entries) {}
 
 constexpr bool JObject::operator==(const JObject& other) const {
   // FIXME
@@ -288,8 +302,29 @@ constexpr auto sepBy1(P parser, Sep separator) {
   };
 }
 
-template <TryParser P, class T>
-constexpr auto whitespace_or(P parser, const T& default_value) noexcept {
+template <TryParser P1, TryParser P2>
+constexpr auto sequence(P1 p1, P2 p2) noexcept {
+  using result_type = std::expected<parse_result<std::tuple<                                                          //
+                                        typename std::invoke_result_t<P1, std::string_view>::value_type::value_type,  //
+                                        typename std::invoke_result_t<P2, std::string_view>::value_type::value_type   //
+                                        >>,
+                                    std::string_view>;
+
+  return [=](std::string_view sv) -> result_type {
+    if (auto m1 = p1(sv)) {
+      if (auto m2 = p2(m1->remainder)) {
+        return parse_result{std::tuple{m1->value, m2->value}, m2->remainder};
+      } else {
+        return std::unexpected{m2.error()};
+      }
+    } else {
+      return std::unexpected{m1.error()};
+    }
+  };
+}
+
+template <TryParser P, class T = typename std::invoke_result_t<P, std::string_view>::value_type::value_type>
+constexpr auto whitespace_or(P parser, const T& default_value = {}) noexcept {
   return [=](std::string_view sv) -> std::invoke_result_t<P, std::string_view> {
     if (auto m = parser(sv)) {
       return m;
@@ -300,12 +335,24 @@ constexpr auto whitespace_or(P parser, const T& default_value) noexcept {
   };
 }
 
-constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_parse(std::string_view sv) noexcept {
-  const auto item_parser = [](std::string_view s) -> std::expected<parse_result<std::tuple<JString, JValue>>, std::string_view> {
-    const auto ws = many(anyOf(" \t\r\n"));
-    if (auto key = between(ws, ws, JString::try_parse)(s)) {
+template <TryParser P, class T = typename std::invoke_result_t<P, std::string_view>::value_type::value_type>
+constexpr auto optional(P parser, const T& default_value = {}) noexcept {
+  return [=](std::string_view sv) -> std::invoke_result_t<P, std::string_view> {
+    if (auto m = parser(sv)) {
+      return m;
+    } else {
+      return parse_result{default_value, sv};
+    }
+  };
+}
+
+constexpr auto whitespace = many(anyOf(" \t\r\n"));
+
+constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_parse(std::string_view sv, ParseOptions opts) noexcept {
+  const auto item_parser = [&](std::string_view s) -> std::expected<parse_result<std::tuple<JString, JValue>>, std::string_view> {
+    if (auto key = between(whitespace, whitespace, std::bind_back(JString::try_parse, opts))(s)) {
       if (auto delim = anyOf(":")(key->remainder)) {
-        if (auto value = JValue::try_parse(delim->remainder)) {
+        if (auto value = JValue::try_parse(delim->remainder, opts)) {
           return parse_result{std::tuple{key->value, value->value}, value->remainder};
         }
       }
@@ -313,33 +360,45 @@ constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_pa
     return std::unexpected{"invalid item"};
   };
 
-  if (auto m = between(anyOf("{"), anyOf("}"), whitespace_or(sepBy1(item_parser, anyOf(",")), std::vector<std::tuple<JString, JValue>>{}))(sv)) {
-    JObject res;
-    res.entries_ = m->value;
-    return parse_result{res, m->remainder};
+  if (opts.allow_trailing_comma) {
+    if (auto m = between(anyOf("{"), anyOf("}"), sequence(whitespace_or(sepBy1(item_parser, anyOf(","))), optional(sequence(anyOf(","), whitespace))))(sv)) {
+      return parse_result{JObject{std::get<0>(m->value)}, m->remainder};
+    } else {
+      return std::unexpected("invalid object");
+    }
   } else {
-    return std::unexpected("invalid object");
+    if (auto m = between(anyOf("{"), anyOf("}"), whitespace_or(sepBy1(item_parser, anyOf(","))))(sv)) {
+      return parse_result{JObject{m->value}, m->remainder};
+    } else {
+      return std::unexpected("invalid object");
+    }
   }
 }
 
-constexpr std::expected<parse_result<JArray>, std::string_view> JArray::try_parse(std::string_view sv) noexcept {
-  if (auto m = between(anyOf("["), anyOf("]"), whitespace_or(sepBy1(JValue::try_parse, anyOf(",")), std::vector<JValue>{}))(sv)) {
-    JArray res;
-    res.values_ = m->value;
-    return parse_result{res, m->remainder};
+constexpr std::expected<parse_result<JArray>, std::string_view> JArray::try_parse(std::string_view sv, ParseOptions opts) noexcept {
+  if (opts.allow_trailing_comma) {
+    if (auto m = between(anyOf("["), anyOf("]"), sequence(whitespace_or(sepBy1(std::bind_back(JValue::try_parse, opts), anyOf(","))), optional(sequence(anyOf(","), whitespace))))(sv)) {
+      return parse_result{JArray{std::get<0>(m->value)}, m->remainder};
+    } else {
+      return std::unexpected{m.error()};
+    }
   } else {
-    return std::unexpected{m.error()};
+    if (auto m = between(anyOf("["), anyOf("]"), whitespace_or(sepBy1(std::bind_back(JValue::try_parse, opts), anyOf(","))))(sv)) {
+      return parse_result{JArray{m->value}, m->remainder};
+    } else {
+      return std::unexpected{m.error()};
+    }
   }
 }
 
-constexpr std::expected<parse_result<JNumber>, std::string_view> JNumber::try_parse(std::string_view sv) noexcept {
+constexpr std::expected<parse_result<JNumber>, std::string_view> JNumber::try_parse(std::string_view sv, ParseOptions opts) noexcept {
   double value;
   auto [out, errc] = std::from_chars(sv.begin(), sv.end(), value);
   if (errc != std::errc{}) return std::unexpected("invalid number");
   return parse_result<JNumber>{JNumber{value}, std::string_view(out, sv.end())};
 }
 
-constexpr std::expected<parse_result<JString>, std::string_view> JString::try_parse(std::string_view sv) noexcept {
+constexpr std::expected<parse_result<JString>, std::string_view> JString::try_parse(std::string_view sv, ParseOptions opts) noexcept {
   // TODO: implement escape sequence
   const auto charParser = [](std::string_view s) -> std::expected<parse_result<std::string>, std::string_view> {
     if (auto m = noneOf("\\\"")(s)) return parse_result{std::string(1, m->value), s.substr(1)};
@@ -357,7 +416,7 @@ constexpr std::expected<parse_result<JString>, std::string_view> JString::try_pa
       if (trimmed.starts_with('t')) return parse_result{"\t"s, trimmed.substr(1)};
       if (trimmed.starts_with('u')) {
         if (!times(anyOf("0123456789ABCDEF"), 4)(trimmed.substr(1))) return std::unexpected{"invalid hex code"};
-        const std::string_view hex = trimmed.substr(1,4);
+        const std::string_view hex = trimmed.substr(1, 4);
 
         unsigned n;
         std::from_chars(hex.begin(), hex.end(), n, 16);
@@ -381,26 +440,24 @@ constexpr std::expected<parse_result<JString>, std::string_view> JString::try_pa
   }
 }
 
-constexpr std::expected<parse_result<JBool>, std::string_view> JBool::try_parse(std::string_view sv) noexcept {
+constexpr std::expected<parse_result<JBool>, std::string_view> JBool::try_parse(std::string_view sv, ParseOptions opts) noexcept {
   if (sv.starts_with("true")) return parse_result{JBool{true}, sv.substr(4)};
   if (sv.starts_with("false")) return parse_result{JBool{false}, sv.substr(5)};
   return std::unexpected{"invalid boolean"};
 }
 
-constexpr std::expected<parse_result<JNull>, std::string_view> JNull::try_parse(std::string_view sv) noexcept {
+constexpr std::expected<parse_result<JNull>, std::string_view> JNull::try_parse(std::string_view sv, ParseOptions opts) noexcept {
   if (!sv.starts_with("null")) return std::unexpected{"invalid null"};
   return parse_result{JNull{}, sv.substr(4)};
 }
 
-constexpr std::expected<parse_result<JValue>, std::string_view> JValue::try_parse(std::string_view sv) noexcept {
-  const auto ws = many(anyOf(" \t\r\n"));
-
-  if (auto m = between(ws, ws, JObject::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = between(ws, ws, JNumber::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = between(ws, ws, JArray::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = between(ws, ws, JString::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = between(ws, ws, JBool::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
-  if (auto m = between(ws, ws, JNull::try_parse)(sv)) return parse_result{JValue{m->value}, m->remainder};
+constexpr std::expected<parse_result<JValue>, std::string_view> JValue::try_parse(std::string_view sv, ParseOptions opts) noexcept {
+  if (auto m = between(whitespace, whitespace, std::bind_back(JObject::try_parse, opts))(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(whitespace, whitespace, std::bind_back(JNumber::try_parse, opts))(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(whitespace, whitespace, std::bind_back(JArray::try_parse, opts))(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(whitespace, whitespace, std::bind_back(JString::try_parse, opts))(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(whitespace, whitespace, std::bind_back(JBool::try_parse, opts))(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = between(whitespace, whitespace, std::bind_back(JNull::try_parse, opts))(sv)) return parse_result{JValue{m->value}, m->remainder};
   return std::unexpected{"invalid value"};
 }
 

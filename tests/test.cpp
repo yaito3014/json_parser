@@ -49,6 +49,29 @@ BOOST_AUTO_TEST_CASE(SepBy1) {
   BOOST_TEST(!bool(parser("c")));
 }
 
+BOOST_AUTO_TEST_CASE(Sequence) {
+  const auto parser = yk::sequence(yk::anyOf("ab"), yk::anyOf("cd"));
+
+  BOOST_TEST((parser("ac") == yk::parse_result{std::tuple{'a', 'c'}, ""}));
+  BOOST_TEST((parser("bc") == yk::parse_result{std::tuple{'b', 'c'}, ""}));
+  BOOST_TEST((parser("ad") == yk::parse_result{std::tuple{'a', 'd'}, ""}));
+  BOOST_TEST((parser("bd") == yk::parse_result{std::tuple{'b', 'd'}, ""}));
+
+  BOOST_TEST(!bool(parser("aa")));
+  BOOST_TEST(!bool(parser("bb")));
+  BOOST_TEST(!bool(parser("cc")));
+  BOOST_TEST(!bool(parser("dd")));
+}
+
+BOOST_AUTO_TEST_CASE(Optional) {
+  const auto parser = yk::optional(yk::anyOf("ab"), 'x');
+
+  BOOST_TEST((parser("a") == yk::parse_result{'a', ""}));
+  BOOST_TEST((parser("b") == yk::parse_result{'b', ""}));
+
+  BOOST_TEST((parser("c") == yk::parse_result{'x', "c"}));
+}
+
 BOOST_AUTO_TEST_CASE(WhitespaceOr) {
   const auto parser = yk::whitespace_or(yk::anyOf("ab"), 'x');
 
@@ -163,6 +186,61 @@ BOOST_AUTO_TEST_CASE(Value) {
          }));
 
   BOOST_TEST((yk::JValue::parse(R"( { "colon:here":"comma,here" } )") == yk::JObject{{yk::JString{"colon:here"}, yk::JString{"comma,here"}}}));
+}
+
+BOOST_AUTO_TEST_CASE(TrailingComma) {
+  {
+    yk::ParseOptions opts{.allow_trailing_comma = false};
+
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[,]", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[3,]", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[3, ]", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[3,1,]", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[3,1, ]", opts), yk::parse_error);
+
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[,3]", opts), yk::parse_error);
+
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ , })", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": "bar", })", opts), yk::parse_error);
+
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": [], })", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": [,] })", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": [3,] })", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": [3,], })", opts), yk::parse_error);
+
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": {},   })", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": {,}  })", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JObject::parse(R"({ "foo": {,}, })", opts), yk::parse_error);
+
+    BOOST_REQUIRE_THROW(yk::JValue::parse("[],", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JValue::parse("{},", opts), yk::parse_error);
+  }
+  {
+    yk::ParseOptions opts{.allow_trailing_comma = true};
+
+    BOOST_TEST((yk::JArray::parse("[,]", opts) == yk::JArray{}));
+    BOOST_TEST((yk::JArray::parse("[3,]", opts) == yk::JArray{yk::JNumber{3}}));
+    BOOST_TEST((yk::JArray::parse("[3, ]", opts) == yk::JArray{yk::JNumber{3}}));
+    BOOST_TEST((yk::JArray::parse("[3,1,]", opts) == yk::JArray{yk::JNumber{3}, yk::JNumber{1}}));
+    BOOST_TEST((yk::JArray::parse("[3,1, ]", opts) == yk::JArray{yk::JNumber{3}, yk::JNumber{1}}));
+
+    BOOST_REQUIRE_THROW(yk::JArray::parse("[,3]", opts), yk::parse_error);
+
+    BOOST_TEST((yk::JObject::parse(R"({ , })", opts) == yk::JObject{}));
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": "bar", })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JString{"bar"}}}));
+
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": [], })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JArray{}}}));
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": [,] })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JArray{}}}));
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": [3,] })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JArray{yk::JNumber{3}}}}));
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": [3,], })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JArray{yk::JNumber{3}}}}));
+
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": {},   })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JObject{}}}));
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": {,}  })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JObject{}}}));
+    BOOST_TEST((yk::JObject::parse(R"({ "foo": {,}, })", opts) == yk::JObject{{yk::JString{"foo"}, yk::JObject{}}}));
+
+    BOOST_REQUIRE_THROW(yk::JValue::parse("[],", opts), yk::parse_error);
+    BOOST_REQUIRE_THROW(yk::JValue::parse("{},", opts), yk::parse_error);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // yk_json_parser
