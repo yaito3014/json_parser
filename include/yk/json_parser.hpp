@@ -55,12 +55,28 @@ class JString;
 class JBool;
 class JNull;
 
-class JObject {
+template <class Derived>
+struct ParserMixin {
+  static constexpr Derived parse(std::string_view sv) {
+    if (auto expect = Derived::try_parse(sv)) {
+      if (expect->remainder.empty()) {
+        return expect->value;
+      } else {
+        throw parse_error("not fully parsed");
+      }
+    } else {
+      throw parse_error(expect.error().data());
+    }
+  }
+
+  friend constexpr bool operator==(const ParserMixin&, const ParserMixin&) = default;
+};
+
+class JObject : public ParserMixin<JObject> {
 public:
   constexpr JObject() = default;
   constexpr JObject(std::initializer_list<std::tuple<JString, JValue>> init_list) : entries_(init_list) {}
 
-  static constexpr JObject parse(std::string_view);
   static constexpr std::expected<parse_result<JObject>, std::string_view> try_parse(std::string_view) noexcept;
 
   constexpr bool operator==(const JObject&) const;
@@ -69,20 +85,19 @@ private:
   std::vector<std::tuple<JString, JValue>> entries_;
 };
 
-class JNumber {
+class JNumber : public ParserMixin<JNumber> {
 public:
   constexpr JNumber(double value) noexcept : value_(value) {}
 
   constexpr bool operator==(const JNumber&) const noexcept = default;
 
-  static constexpr JNumber parse(std::string_view);
   static constexpr std::expected<parse_result<JNumber>, std::string_view> try_parse(std::string_view) noexcept;
 
 private:
   double value_;
 };
 
-class JArray {
+class JArray : public ParserMixin<JArray> {
 public:
   constexpr JArray() = default;
 
@@ -90,48 +105,44 @@ public:
 
   constexpr bool operator==(const JArray&) const noexcept;
 
-  static constexpr JArray parse(std::string_view);
   static constexpr std::expected<parse_result<JArray>, std::string_view> try_parse(std::string_view) noexcept;
 
 private:
   std::vector<JValue> values_;
 };
 
-class JString {
+class JString : public ParserMixin<JString> {
 public:
   constexpr JString(std::string_view sv) : str_(sv) {}
 
   constexpr bool operator==(const JString&) const noexcept = default;
 
-  static constexpr JString parse(std::string_view);
   static constexpr std::expected<parse_result<JString>, std::string_view> try_parse(std::string_view) noexcept;
 
 private:
   std::string str_;
 };
 
-class JBool {
+class JBool : public ParserMixin<JBool> {
 public:
   constexpr JBool(bool value) noexcept : value_(value) {}
 
   constexpr bool operator==(const JBool&) const noexcept = default;
 
-  static constexpr JBool parse(std::string_view);
   static constexpr std::expected<parse_result<JBool>, std::string_view> try_parse(std::string_view) noexcept;
 
 private:
   bool value_;
 };
 
-class JNull {
+class JNull : public ParserMixin<JNull> {
 public:
   constexpr bool operator==(const JNull&) const noexcept = default;
 
-  static constexpr JNull parse(std::string_view);
   static constexpr std::expected<parse_result<JNull>, std::string_view> try_parse(std::string_view) noexcept;
 };
 
-class JValue {
+class JValue : public ParserMixin<JValue> {
 public:
   enum class Kind {
     Null,
@@ -166,7 +177,6 @@ public:
 
   constexpr bool operator==(const JValue&) const = default;
 
-  static constexpr JValue parse(std::string_view sv);
   static constexpr std::expected<parse_result<JValue>, std::string_view> try_parse(std::string_view) noexcept;
 
 private:
@@ -194,6 +204,13 @@ constexpr std::string_view trim_end(std::string_view sv) noexcept {
 
 constexpr std::string_view trim(std::string_view sv) noexcept { return trim_start(trim_end(sv)); }
 
+constexpr auto anyChar(std::string_view sv) noexcept {
+  return [=](std::string_view sv) -> std::expected<parse_result<char>, std::string_view> {
+    if (sv.empty()) return std::unexpected{"empty input"};
+    return parse_result{sv.front(), sv.substr(1)};
+  };
+}
+
 constexpr auto anyOf(std::string_view chars) noexcept {
   return [=](std::string_view sv) -> std::expected<parse_result<char>, std::string_view> {
     if (sv.empty()) return std::unexpected{"empty input"};
@@ -202,96 +219,75 @@ constexpr auto anyOf(std::string_view chars) noexcept {
   };
 }
 
-template <TryParser P1, TryParser P2>
-constexpr auto sequence(P1 p1, P2 p2) noexcept {
-  return [=](std::string_view sv) -> std::expected<parse_result<std::tuple<typename std::invoke_result_t<P1, std::string_view>::value_type::value_type,
-                                                                           typename std::invoke_result_t<P2, std::string_view>::value_type::value_type>>,
-                                                   std::string_view> {
-    if (auto m1 = p1(sv)) {
-      if (auto m2 = p2(m1->remainder)) {
-        return parse_result{std::tuple{m1->value, m2->value}, m2->remainder};
+constexpr auto noneOf(std::string_view chars) noexcept {
+  return [=](std::string_view sv) -> std::expected<parse_result<char>, std::string_view> {
+    if (sv.empty()) return std::unexpected{"empty input"};
+    if (chars.contains(sv.front())) return std::unexpected{"found matching char"};
+    return parse_result{sv.front(), sv.substr(1)};
+  };
+}
+
+template <TryParser Open, TryParser Close, TryParser P>
+constexpr auto between(Open open, Close close, P parser) {
+  return [=](std::string_view sv) -> std::expected<typename std::invoke_result_t<P, std::string_view>::value_type, std::string_view> {
+    if (auto mopen = open(sv)) {
+      if (auto mvalue = parser(mopen->remainder)) {
+        if (auto mclose = close(mvalue->remainder)) {
+          return parse_result{mvalue->value, mclose->remainder};
+        } else {
+          return std::unexpected{"missing close"};
+        }
       } else {
-        return std::unexpected{m2.error()};
+        return std::unexpected{mvalue.error()};
       }
     } else {
-      return std::unexpected{m1.error()};
+      return std::unexpected{"missing open"};
     }
   };
 }
 
-constexpr JObject JObject::parse(std::string_view sv) {
-  if (sv.size() < 2 || sv.front() != '{' || sv.back() != '}') throw parse_error("object is not surrounded by curly brackets");
-
-  JObject object;
-  // FIXME
-  for (auto&& item : trim(sv.substr(1, sv.size() - 2)) | std::views::split(',')) {
-    std::string_view key_value_pair{item};
-    std::size_t pos = key_value_pair.find_first_of(':');
-    std::string_view key = trim(key_value_pair.substr(0, pos));
-    std::string_view value = trim(key_value_pair.substr(pos + 1));
-    object.entries_.emplace_back(JString::parse(key), JValue::parse(value));
-  }
-
-  return object;
+template <TryParser P>
+constexpr auto many(P parser) {
+  return [=](std::string_view sv) -> std::expected<parse_result<std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type>>, std::string_view> {
+    std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type> res;
+    std::string_view remaining = sv;
+    while (auto m = parser(remaining)) {
+      res.push_back(m->value);
+      remaining = m->remainder;
+    }
+    return parse_result{res, remaining};
+  };
 }
 
 constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
 
-constexpr JArray JArray::parse(std::string_view sv) {
-  if (sv.size() < 2 || sv.front() != '[' || sv.back() != ']') throw parse_error("array is not surrounded by square brackets");
-
-  JArray array;
-  // FIXME
-  for (auto&& item : trim(sv.substr(1, sv.size() - 2)) | std::views::split(',')) {
-    array.values_.emplace_back(yk::JValue::parse(trim(std::string_view(item))));
-  }
-
-  return array;
-}
-
 constexpr std::expected<parse_result<JArray>, std::string_view> JArray::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
-
-constexpr JNumber JNumber::parse(std::string_view sv) {
-  if (auto expect = try_parse(sv))
-    return expect->value;
-  else
-    throw parse_error(expect.error().data());
-}
 
 constexpr std::expected<parse_result<JNumber>, std::string_view> JNumber::try_parse(std::string_view sv) noexcept {
   double value;
   auto [out, errc] = std::from_chars(sv.begin(), sv.end(), value);
-  if (errc != std::errc{} || out != sv.end()) return std::unexpected("invalid number");
+  if (errc != std::errc{}) return std::unexpected("invalid number");
   return parse_result<JNumber>{JNumber{value}, std::string(out, sv.end())};
 }
 
-constexpr JString JString::parse(std::string_view sv) {
-  if (sv.size() < 2 || sv.front() != '"' || sv.back() != '"') throw parse_error("not quoted string");
-  return JString{sv.substr(1, sv.size() - 2)};  // TODO: implement escape sequence
+constexpr std::expected<parse_result<JString>, std::string_view> JString::try_parse(std::string_view sv) noexcept {
+  // TODO: implement escape sequence
+  if (auto m = between(anyOf("\""), anyOf("\""), many(noneOf("\"")))(sv)) {
+    return parse_result{JString{std::string_view{m->value.begin(), m->value.end()}}, m->remainder};
+  } else {
+    return std::unexpected{m.error()};
+  }
 }
 
-constexpr std::expected<parse_result<JString>, std::string_view> JString::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
-
-constexpr JBool JBool::parse(std::string_view sv) {
-  if (sv == "true") return JBool{true};
-  if (sv == "false") return JBool{false};
-  throw parse_error("invalid boolean");
+constexpr std::expected<parse_result<JBool>, std::string_view> JBool::try_parse(std::string_view sv) noexcept {
+  if (sv.starts_with("true")) return parse_result{JBool{true}, sv.substr(4)};
+  if (sv.starts_with("false")) return parse_result{JBool{false}, sv.substr(5)};
+  return std::unexpected{"invalid boolean"};
 }
 
-constexpr std::expected<parse_result<JBool>, std::string_view> JBool::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
-
-constexpr JNull JNull::parse(std::string_view sv) {
-  if (sv != "null") throw parse_error("invalid null");
-  return JNull{};
-}
-
-constexpr std::expected<parse_result<JNull>, std::string_view> JNull::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
-
-constexpr JValue JValue::parse(std::string_view sv) {
-  if (auto expect = try_parse(sv))
-    return expect->value;
-  else
-    throw parse_error(expect.error().data());
+constexpr std::expected<parse_result<JNull>, std::string_view> JNull::try_parse(std::string_view sv) noexcept {
+  if (!sv.starts_with("null")) return std::unexpected{"invalid null"};
+  return parse_result{JNull{}, sv.substr(4)};
 }
 
 constexpr std::expected<parse_result<JValue>, std::string_view> JValue::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }

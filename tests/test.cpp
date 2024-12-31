@@ -31,12 +31,22 @@ BOOST_AUTO_TEST_CASE(AnyOf) {
   BOOST_TEST(!bool(yk::anyOf("abc")("d")));
 }
 
-BOOST_AUTO_TEST_CASE(Sequence) {
-  const auto parser = yk::sequence(yk::anyOf("a"), yk::anyOf("b"));
-  BOOST_TEST((parser("abc").value() == yk::parse_result{std::tuple{'a', 'b'}, "c"}));
+BOOST_AUTO_TEST_CASE(NoneOf) {
+  BOOST_TEST(!bool(yk::noneOf("ab")("a")));
+  BOOST_TEST(!bool(yk::noneOf("ab")("b")));
+  BOOST_TEST(bool(yk::noneOf("ab")("c")));
+}
 
-  BOOST_TEST(!bool(parser("ac")));
-  BOOST_TEST(!bool(parser("c")));
+BOOST_AUTO_TEST_CASE(Between) {
+  const auto parser = yk::between(yk::anyOf("{"), yk::anyOf("}"), yk::anyOf("ab"));
+
+  BOOST_TEST((parser("{a}").value() == yk::parse_result{'a', ""}));
+  BOOST_TEST((parser("{b}").value() == yk::parse_result{'b', ""}));
+  BOOST_TEST(!bool(parser("{c}")));
+
+  BOOST_TEST(!bool(parser("a}")));
+  BOOST_TEST(!bool(parser("{a")));
+  BOOST_TEST(!bool(parser("a")));
 }
 
 BOOST_AUTO_TEST_CASE(Number) {
@@ -44,8 +54,8 @@ BOOST_AUTO_TEST_CASE(Number) {
   BOOST_TEST((yk::JNumber::parse("3.14") == yk::JNumber{3.14}));
 
   BOOST_REQUIRE_THROW(yk::JNumber::parse("foobar"), yk::parse_error);
-
   BOOST_REQUIRE_THROW(yk::JNumber::parse("3.14foo"), yk::parse_error);
+
   BOOST_REQUIRE_THROW(yk::JNumber::parse("foo3.14"), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JNumber::parse("foo3.14bar"), yk::parse_error);
 }
