@@ -259,9 +259,42 @@ constexpr auto many(P parser) {
   };
 }
 
+template <TryParser P, TryParser Sep>
+constexpr auto sepBy(P parser, Sep separator) {
+  return [=](std::string_view sv) -> std::expected<parse_result<std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type>>, std::string_view> {
+    std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type> res;
+    std::string_view remaining = sv;
+    if (auto head = parser(sv)) {
+      res.push_back(head->value);
+      remaining = head->remainder;
+      while (true) {
+        if (auto sep = separator(remaining)) {
+          if (auto elem = parser(sep->remainder)) {
+            res.push_back(elem->value);
+            remaining = elem->remainder;
+            continue;
+          }
+        }
+        break;
+      }
+      return parse_result{res, remaining};
+    } else {
+      return std::unexpected{head.error()};
+    }
+  };
+}
+
 constexpr std::expected<parse_result<JObject>, std::string_view> JObject::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
 
-constexpr std::expected<parse_result<JArray>, std::string_view> JArray::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
+constexpr std::expected<parse_result<JArray>, std::string_view> JArray::try_parse(std::string_view sv) noexcept {
+  if (auto m = between(anyOf("["), anyOf("]"), sepBy(JValue::try_parse, anyOf(",")))(sv)) {
+    JArray res;
+    res.values_ = m->value;
+    return parse_result{res, m->remainder};
+  } else {
+    return std::unexpected{m.error()};
+  }
+}
 
 constexpr std::expected<parse_result<JNumber>, std::string_view> JNumber::try_parse(std::string_view sv) noexcept {
   double value;
