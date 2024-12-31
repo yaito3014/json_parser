@@ -323,7 +323,15 @@ constexpr std::expected<parse_result<JNull>, std::string_view> JNull::try_parse(
   return parse_result{JNull{}, sv.substr(4)};
 }
 
-constexpr std::expected<parse_result<JValue>, std::string_view> JValue::try_parse(std::string_view) noexcept { return std::unexpected("not implemented"); }
+constexpr std::expected<parse_result<JValue>, std::string_view> JValue::try_parse(std::string_view sv) noexcept {
+  if (auto m = JObject::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = JNumber::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = JArray::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = JString::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = JBool::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  if (auto m = JNull::try_parse(sv)) return parse_result{JValue{m->value}, m->remainder};
+  return std::unexpected{"invalid value"};
+}
 
 }  // namespace yk
 
