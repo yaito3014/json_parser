@@ -49,6 +49,15 @@ BOOST_AUTO_TEST_CASE(Between) {
   BOOST_TEST(!bool(parser("a")));
 }
 
+BOOST_AUTO_TEST_CASE(SepBy) {
+  const auto parser = yk::sepBy(yk::anyOf("ab"), yk::anyOf(","));
+
+  BOOST_TEST((parser("a").value() == yk::parse_result{std::vector{'a'}}, ""));
+  BOOST_TEST((parser("a,b").value() == yk::parse_result{std::vector{'a', 'b'}}, ""));
+
+  BOOST_TEST(!bool(parser(",")));
+}
+
 BOOST_AUTO_TEST_CASE(Number) {
   BOOST_TEST((yk::JNumber::parse("42") == yk::JNumber{42}));
   BOOST_TEST((yk::JNumber::parse("3.14") == yk::JNumber{3.14}));
