@@ -31,6 +31,14 @@ BOOST_AUTO_TEST_CASE(Between) {
   BOOST_TEST(!bool(parser("a")));
 }
 
+BOOST_AUTO_TEST_CASE(Times) {
+  const auto parser = yk::times(yk::anyOf("abc"), 3);
+
+  BOOST_TEST((parser("abc").value() == yk::parse_result{std::vector{'a', 'b', 'c'}, ""}));
+
+  BOOST_TEST(!bool(parser("ab")));
+}
+
 BOOST_AUTO_TEST_CASE(SepBy1) {
   const auto parser = yk::sepBy1(yk::anyOf("ab"), yk::anyOf(","));
 
@@ -62,6 +70,7 @@ BOOST_AUTO_TEST_CASE(Combinator) {
 BOOST_AUTO_TEST_CASE(Number) {
   BOOST_TEST((yk::JNumber::parse("42") == yk::JNumber{42}));
   BOOST_TEST((yk::JNumber::parse("3.14") == yk::JNumber{3.14}));
+  BOOST_TEST((yk::JNumber::parse("-1.234e5") == yk::JNumber{-1.234e5}));
 
   BOOST_REQUIRE_THROW(yk::JNumber::parse("foobar"), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JNumber::parse("3.14foo"), yk::parse_error);
@@ -75,6 +84,11 @@ BOOST_AUTO_TEST_CASE(Number) {
 BOOST_AUTO_TEST_CASE(String) {
   BOOST_TEST((yk::JString::parse("\"\"") == yk::JString{""}));
   BOOST_TEST((yk::JString::parse("\"foobar\"") == yk::JString{"foobar"}));
+
+  BOOST_TEST((yk::JString::parse(R"("\r\n\t\b\f")") == yk::JString{"\r\n\t\b\f"}));
+  BOOST_TEST((yk::JString::parse(R"("\\\"")") == yk::JString{"\\\""}));
+
+  BOOST_TEST((yk::JString::parse(R"("\u0020")") == yk::JString{"\u0020"}));
 
   BOOST_REQUIRE_THROW(yk::JNumber::parse(""), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JNumber::parse("\""), yk::parse_error);
@@ -107,6 +121,8 @@ BOOST_AUTO_TEST_CASE(Array) {
 
   BOOST_TEST((yk::JArray::parse("[\",\",\",\"]") == yk::JArray{yk::JString{","}, yk::JString{","}}));
 
+  BOOST_TEST((yk::JArray::parse("[[33],[4]]") == yk::JArray{yk::JArray{yk::JNumber{33}}, yk::JArray{yk::JNumber{4}}}));
+
   BOOST_REQUIRE_THROW(yk::JArray::parse("["), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JArray::parse("]"), yk::parse_error);
   BOOST_REQUIRE_THROW(yk::JArray::parse("[,]"), yk::parse_error);
@@ -131,6 +147,22 @@ BOOST_AUTO_TEST_CASE(Value) {
 
   BOOST_TEST((yk::JValue::parse("42") == yk::JNumber{42}));
   BOOST_TEST((yk::JValue::parse("3.14") == yk::JNumber{3.14}));
+
+  BOOST_TEST((yk::JValue::parse(R"(
+    {
+      "str": "foobar",
+      "number": 3.14,
+      "boolean": [true, false],
+      "null": null
+    }
+  )") == yk::JObject{
+             {yk::JString{"str"}, yk::JString{"foobar"}},
+             {yk::JString{"number"}, yk::JNumber{3.14}},
+             {yk::JString{"boolean"}, yk::JArray{yk::JBool{true}, yk::JBool{false}}},
+             {yk::JString{"null"}, yk::JNull{}},
+         }));
+
+  BOOST_TEST((yk::JValue::parse(R"( { "colon:here":"comma,here" } )") == yk::JObject{{yk::JString{"colon:here"}, yk::JString{"comma,here"}}}));
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // yk_json_parser

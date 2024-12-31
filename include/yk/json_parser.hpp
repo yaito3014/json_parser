@@ -3,6 +3,7 @@
 
 #include <exception>
 #include <expected>
+#include <filesystem>
 #include <functional>
 #include <initializer_list>
 #include <ranges>
@@ -214,7 +215,7 @@ constexpr auto noneOf(std::string_view chars) noexcept {
 }
 
 template <TryParser Open, TryParser Close, TryParser P>
-constexpr auto between(Open open, Close close, P parser) {
+constexpr auto between(Open open, Close close, P parser) noexcept {
   return [=](std::string_view sv) -> std::expected<typename std::invoke_result_t<P, std::string_view>::value_type, std::string_view> {
     if (auto mopen = open(sv)) {
       if (auto mvalue = parser(mopen->remainder)) {
@@ -240,6 +241,23 @@ constexpr auto many(P parser) {
     while (auto m = parser(remaining)) {
       res.push_back(m->value);
       remaining = m->remainder;
+    }
+    return parse_result{res, remaining};
+  };
+}
+
+template <TryParser P>
+constexpr auto times(P parser, unsigned n) {
+  return [=](std::string_view sv) -> std::expected<parse_result<std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type>>, std::string_view> {
+    std::vector<typename std::invoke_result_t<P, std::string_view>::value_type::value_type> res;
+    std::string_view remaining = sv;
+    for (auto i = 0u; i < n; ++i) {
+      if (auto m = parser(remaining)) {
+        res.push_back(m->value);
+        remaining = m->remainder;
+      } else {
+        return std::unexpected{"not enough elements"};
+      }
     }
     return parse_result{res, remaining};
   };
@@ -323,8 +341,41 @@ constexpr std::expected<parse_result<JNumber>, std::string_view> JNumber::try_pa
 
 constexpr std::expected<parse_result<JString>, std::string_view> JString::try_parse(std::string_view sv) noexcept {
   // TODO: implement escape sequence
-  if (auto m = between(anyOf("\""), anyOf("\""), many(noneOf("\"")))(sv)) {
-    return parse_result{JString{std::string_view{m->value.begin(), m->value.end()}}, m->remainder};
+  const auto charParser = [](std::string_view s) -> std::expected<parse_result<std::string>, std::string_view> {
+    if (auto m = noneOf("\\\"")(s)) return parse_result{std::string(1, m->value), s.substr(1)};
+
+    using namespace std::string_literals;
+
+    if (s.starts_with('\\')) {
+      const std::string_view trimmed = s.substr(1);
+      if (trimmed.starts_with('\"')) return parse_result{"\""s, trimmed.substr(1)};
+      if (trimmed.starts_with('\\')) return parse_result{"\\"s, trimmed.substr(1)};
+      if (trimmed.starts_with('b')) return parse_result{"\b"s, trimmed.substr(1)};
+      if (trimmed.starts_with('f')) return parse_result{"\f"s, trimmed.substr(1)};
+      if (trimmed.starts_with('n')) return parse_result{"\n"s, trimmed.substr(1)};
+      if (trimmed.starts_with('r')) return parse_result{"\r"s, trimmed.substr(1)};
+      if (trimmed.starts_with('t')) return parse_result{"\t"s, trimmed.substr(1)};
+      if (trimmed.starts_with('u')) {
+        if (!times(anyOf("0123456789ABCDEF"), 4)(trimmed.substr(1))) return std::unexpected{"invalid hex code"};
+        const std::string_view hex = trimmed.substr(1,4);
+
+        unsigned n;
+        std::from_chars(hex.begin(), hex.end(), n, 16);
+        std::u16string u16str(1, n);
+        std::u8string u8str = std::filesystem::path(u16str).u8string();
+
+        return parse_result{std::string(u8str.begin(), u8str.end()), s.substr(6)};
+      }
+      return std::unexpected{"unknown escape sequence"};
+    }
+
+    return std::unexpected{"invalid string"};
+  };
+
+  if (auto m = between(anyOf("\""), anyOf("\""), many(charParser))(sv)) {
+    const auto view = m->value | std::views::join;
+    std::string res = std::string{view.begin(), view.end()};
+    return parse_result{JString{res}, m->remainder};
   } else {
     return std::unexpected{m.error()};
   }
